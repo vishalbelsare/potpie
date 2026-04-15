@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+from contextlib import asynccontextmanager
+
 import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +20,7 @@ from app.api.router import router as potpie_api_router
 from app.core.base_model import Base
 from app.core.database import SessionLocal, engine
 from app.core.models import *  # noqa #necessary for models to not give import errors
+from app.modules.analytics.analytics_router import router as analytics_router
 from app.modules.auth.auth_router import auth_router
 from app.modules.code_provider.github.github_router import router as github_router
 from app.modules.conversations.conversations_router import (
@@ -66,7 +69,15 @@ class MainApp:
             exit(1)
         self.setup_sentry()
         self.setup_tracing()
-        self.app = FastAPI()
+
+        @asynccontextmanager
+        async def lifespan(_app: FastAPI):
+            _app.state.main_app = self
+            await self.startup_event()
+            yield
+            await self.shutdown_event()
+
+        self.app = FastAPI(lifespan=lifespan)
         self.setup_cors()
         self.setup_logging_middleware()
         self.setup_socket_io()
@@ -173,6 +184,7 @@ class MainApp:
         self.app.include_router(provider_router, prefix="/api/v1", tags=["Providers"])
         self.app.include_router(tool_router, prefix="/api/v1", tags=["Tools"])
         self.app.include_router(usage_router, prefix="/api/v1/usage", tags=["Usage"])
+        self.app.include_router(analytics_router, prefix="/api/v1", tags=["Analytics"])
         self.app.include_router(
             potpie_api_router, prefix="/api/v2", tags=["Potpie API"]
         )
@@ -253,6 +265,7 @@ class MainApp:
                 close_github_async_redis_cache,
                 GithubService,
             )
+
             await close_github_async_redis_cache()
             GithubService.shutdown_executor()
         except Exception as e:
@@ -260,8 +273,6 @@ class MainApp:
 
     def run(self):
         self.add_health_check()
-        self.app.add_event_handler("startup", self.startup_event)
-        self.app.add_event_handler("shutdown", self.shutdown_event)
         return self.app
 
 
